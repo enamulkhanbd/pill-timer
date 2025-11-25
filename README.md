@@ -1,7 +1,8 @@
 
   # PillPal Medication Manager
 
-  This is a code bundle for PillPal Medication Manager. The original project is available at https://www.figma.com/design/3PTKStbAwVoQWFagGgLKKf/PillPal-Medication-Manager.
+  See LIVE
+  https://lasso-scoot-90990616.figma.site
 
   ## Running the code
 
