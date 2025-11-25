@@ -15,7 +15,8 @@
     "react-dom": "^18.2.0",
     "lucide-react": "latest",
     "sonner": "^2.0.3",
-    "react-hook-form": "^7.55.0"
+    "react-hook-form": "^7.55.0",
+    "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

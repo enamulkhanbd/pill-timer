@@ -1,8 +1,7 @@
 
-  # PillPal Medication Manager
+  # Pill Timer
 
-  See LIVE
-  https://lasso-scoot-90990616.figma.site
+  This is a code bundle for Pill Timer. The original project is available at https://www.figma.com/design/3PTKStbAwVoQWFagGgLKKf/Pill-Timer.
 
   ## Running the code
 

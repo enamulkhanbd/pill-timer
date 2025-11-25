@@ -1,6 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { Pill, Plus, Check, Trash2, Activity, X, Pencil, Copy, MoreVertical, SlidersHorizontal, Bell, BellOff, Download } from 'lucide-react';
-import { toast, Toaster } from 'sonner@2.0.3';
+import React, { useState, useEffect } from "react";
+import {
+  Pill,
+  Plus,
+  Check,
+  Trash2,
+  Activity,
+  X,
+  Pencil,
+  Copy,
+  MoreVertical,
+  SlidersHorizontal,
+  LogOut,
+  Users,
+} from "lucide-react";
+import { toast, Toaster } from "sonner@2.0.3";
+import { supabase } from "./utils/supabase/client.tsx";
+import { api } from "./utils/api.tsx";
+import { Auth } from "./components/Auth.tsx";
+import { DatabaseSetup } from "./components/DatabaseSetup.tsx";
+import { SetupBanner } from "./components/SetupBanner.tsx";
 
 // Types
 interface Medication {
@@ -12,6 +30,7 @@ interface Medication {
   daysNeeded?: number;
   startDate?: string;
   endDate?: string;
+  personName?: string; // NEW: For family tracking
 }
 
 interface AppData {
@@ -23,30 +42,41 @@ interface AppData {
 const Button: React.FC<{
   children: React.ReactNode;
   onClick?: () => void;
-  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
-  size?: 'sm' | 'md' | 'lg';
+  variant?: "primary" | "secondary" | "ghost" | "danger";
+  size?: "sm" | "md" | "lg";
   className?: string;
-  type?: 'button' | 'submit';
-}> = ({ children, onClick, variant = 'primary', size = 'md', className = '', type = 'button' }) => {
-  const baseStyles = 'inline-flex items-center justify-center rounded-xl transition-all duration-200 active:scale-95';
-  
+  type?: "button" | "submit";
+  disabled?: boolean;
+}> = ({
+  children,
+  onClick,
+  variant = "primary",
+  size = "md",
+  className = "",
+  type = "button",
+  disabled = false,
+}) => {
+  const baseStyles =
+    "inline-flex items-center justify-center rounded-xl transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed";
+
   const variants = {
-    primary: 'bg-slate-900 text-white hover:bg-slate-800',
-    secondary: 'bg-slate-100 text-slate-900 hover:bg-slate-200',
-    ghost: 'bg-transparent hover:bg-slate-100 text-slate-700',
-    danger: 'bg-red-50 text-red-600 hover:bg-red-100',
+    primary: "bg-slate-900 text-white hover:bg-slate-800",
+    secondary: "bg-slate-100 text-slate-900 hover:bg-slate-200",
+    ghost: "bg-transparent hover:bg-slate-100 text-slate-700",
+    danger: "bg-red-50 text-red-600 hover:bg-red-100",
   };
-  
+
   const sizes = {
-    sm: 'px-3 py-1.5',
-    md: 'px-4 py-2',
-    lg: 'px-6 py-3',
+    sm: "px-3 py-1.5",
+    md: "px-4 py-2",
+    lg: "px-6 py-3",
   };
-  
+
   return (
     <button
       type={type}
       onClick={onClick}
+      disabled={disabled}
       className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}
@@ -61,7 +91,14 @@ const Input: React.FC<{
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   required?: boolean;
   className?: string;
-}> = ({ type = 'text', placeholder, value, onChange, required = false, className = '' }) => {
+}> = ({
+  type = "text",
+  placeholder,
+  value,
+  onChange,
+  required = false,
+  className = "",
+}) => {
   return (
     <input
       type={type}
@@ -78,7 +115,7 @@ const Card: React.FC<{
   children: React.ReactNode;
   className?: string;
   onClick?: () => void;
-}> = ({ children, className = '', onClick }) => {
+}> = ({ children, className = "", onClick }) => {
   return (
     <div
       onClick={onClick}
@@ -96,10 +133,10 @@ const Modal: React.FC<{
   title: string;
 }> = ({ isOpen, onClose, children, title }) => {
   if (!isOpen) return null;
-  
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center animate-fadeIn">
-      <div 
+      <div
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
         onClick={onClose}
       />
@@ -113,9 +150,7 @@ const Modal: React.FC<{
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
-        <div className="p-6">
-          {children}
-        </div>
+        <div className="p-6">{children}</div>
       </div>
     </div>
   );
@@ -123,177 +158,362 @@ const Modal: React.FC<{
 
 // Main App Component
 export default function App() {
-  const [medications, setMedications] = useState<Medication[]>([]);
+  // Database setup state
+  const [isDatabaseSetup, setIsDatabaseSetup] = useState<
+    boolean | null
+  >(null);
+  const [isCreatingTables, setIsCreatingTables] =
+    useState(false);
+
+  // Auth state
+  const [user, setUser] = useState<any>(null);
+  const [session, setSession] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(
+    null,
+  );
+
+  // App state
+  const [medications, setMedications] = useState<Medication[]>(
+    [],
+  );
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [newMed, setNewMed] = useState({ name: '', time: '', dosage: '', daysNeeded: '' });
-  const [editingMed, setEditingMed] = useState<Medication | null>(null);
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [newMed, setNewMed] = useState({
+    name: "",
+    time: "",
+    dosage: "",
+    daysNeeded: "",
+    personName: "",
+  });
+  const [editingMed, setEditingMed] =
+    useState<Medication | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(
+    null,
+  );
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [sortBy, setSortBy] = useState<'time' | 'name' | 'status'>('time');
+  const [sortBy, setSortBy] = useState<
+    "time" | "name" | "status"
+  >("time");
   const [showCompleted, setShowCompleted] = useState(true);
-  const [durationMode, setDurationMode] = useState<'days' | 'dateRange'>('days');
-  const [dateRange, setDateRange] = useState({ startDate: '', endDate: '' });
-  // const [notificationsEnabled, setNotificationsEnabled] = useState(false);
-  // const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
-  // const [showNotificationHelp, setShowNotificationHelp] = useState(false);
-  
+  const [durationMode, setDurationMode] = useState<
+    "days" | "dateRange"
+  >("days");
+  const [dateRange, setDateRange] = useState({
+    startDate: "",
+    endDate: "",
+  });
+  const [loading, setLoading] = useState(false);
+
+  // Helper function to convert 24-hour time to 12-hour format (01 AM, 02 PM, etc.)
+  const formatTime = (time24: string): string => {
+    if (!time24) return '';
+    
+    // Parse the time (expecting HH:MM format)
+    const [hours, minutes] = time24.split(':').map(Number);
+    
+    if (isNaN(hours)) return time24;
+    
+    // Determine AM/PM
+    const period = hours >= 12 ? 'PM' : 'AM';
+    
+    // Convert to 12-hour format
+    let hours12 = hours % 12;
+    if (hours12 === 0) hours12 = 12; // Handle midnight and noon
+    
+    // Format with leading zero and space before AM/PM
+    return `${hours12.toString().padStart(2, '0')} ${period}`;
+  };
+
+  // Check database setup on mount (before auth check)
+  useEffect(() => {
+    const checkDatabase = async () => {
+      try {
+        console.log("🔍 Checking if database is set up...");
+        const result = await api.checkDatabaseSetup();
+        console.log("📊 Database check result:", result);
+
+        if (result && typeof result.isSetup === "boolean") {
+          if (!result.isSetup) {
+            console.log(
+              "❌ Database NOT set up - CREATING TABLES AUTOMATICALLY...",
+            );
+
+            // Automatically create tables
+            try {
+              console.log(
+                "🚀 Auto-creating database tables...",
+              );
+              const createResult =
+                await api.initializeDatabase();
+              console.log("📊 Create result:", createResult);
+
+              if (createResult.success) {
+                console.log(
+                  "✅ SUCCESS! Tables created automatically!",
+                );
+                toast.success(
+                  "✅ Database tables created successfully!",
+                );
+
+                // Re-check to confirm
+                const recheckResult =
+                  await api.checkDatabaseSetup();
+                setIsDatabaseSetup(recheckResult.isSetup);
+              } else {
+                console.error(
+                  "❌ Auto-create failed:",
+                  createResult.error,
+                );
+                toast.error(
+                  "❌ Failed to create tables automatically",
+                );
+                // Show setup wizard as fallback
+                setIsDatabaseSetup(false);
+              }
+            } catch (error) {
+              console.error(
+                "❌ Error auto-creating tables:",
+                error,
+              );
+              toast.error("❌ Error creating tables");
+              // Show setup wizard as fallback
+              setIsDatabaseSetup(false);
+            }
+          } else {
+            console.log(
+              "✅ Database IS set up - proceeding to app",
+            );
+            setIsDatabaseSetup(true);
+          }
+        } else {
+          console.error(
+            "❌ Invalid response from checkDatabaseSetup:",
+            result,
+          );
+          // Assume database is not set up if we get invalid response
+          setIsDatabaseSetup(false);
+        }
+      } catch (error) {
+        console.error(
+          "❌ Error checking database setup:",
+          error,
+        );
+        // On error, assume database is not set up and show setup wizard
+        setIsDatabaseSetup(false);
+      }
+    };
+
+    checkDatabase();
+  }, []);
+
+  // After database setup, check for existing session
+  useEffect(() => {
+    // Only check session if database is set up
+    if (isDatabaseSetup !== true) {
+      console.log(
+        "⏸️ Skipping session check - database not set up yet",
+      );
+      return;
+    }
+
+    console.log("🔐 Checking for existing session...");
+    checkSession();
+  }, [isDatabaseSetup]);
+
+  // Check for existing session
+  const checkSession = async () => {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (session) {
+        console.log("✅ Found existing session");
+        setSession(session);
+        setUser(session.user);
+      } else {
+        console.log("❌ No existing session found");
+      }
+    } catch (error) {
+      console.error("Error checking session:", error);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   // Register Service Worker for PWA
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
         navigator.serviceWorker
-          .register('/sw.js')
+          .register("/sw.js")
           .then((registration) => {
-            console.log('✅ Service Worker registered successfully:', registration.scope);
+            console.log(
+              "✅ Service Worker registered successfully:",
+              registration.scope,
+            );
           })
           .catch((error) => {
-            console.error('❌ Service Worker registration failed:', error);
+            console.error(
+              "❌ Service Worker registration failed:",
+              error,
+            );
           });
       });
     }
   }, []);
-  
+
   // Add PWA meta tags
   useEffect(() => {
     // Set theme color
-    let metaThemeColor = document.querySelector('meta[name="theme-color"]');
+    let metaThemeColor = document.querySelector(
+      'meta[name="theme-color"]',
+    );
     if (!metaThemeColor) {
-      metaThemeColor = document.createElement('meta');
-      metaThemeColor.setAttribute('name', 'theme-color');
+      metaThemeColor = document.createElement("meta");
+      metaThemeColor.setAttribute("name", "theme-color");
       document.head.appendChild(metaThemeColor);
     }
-    metaThemeColor.setAttribute('content', '#0f172a');
-    
+    metaThemeColor.setAttribute("content", "#0f172a");
+
     // Set viewport for mobile
-    let metaViewport = document.querySelector('meta[name="viewport"]');
+    let metaViewport = document.querySelector(
+      'meta[name="viewport"]',
+    );
     if (!metaViewport) {
-      metaViewport = document.createElement('meta');
-      metaViewport.setAttribute('name', 'viewport');
+      metaViewport = document.createElement("meta");
+      metaViewport.setAttribute("name", "viewport");
       document.head.appendChild(metaViewport);
     }
-    metaViewport.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no');
-    
+    metaViewport.setAttribute(
+      "content",
+      "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no",
+    );
+
     // Set apple mobile web app capable
-    let metaApple = document.querySelector('meta[name="apple-mobile-web-app-capable"]');
+    let metaApple = document.querySelector(
+      'meta[name="apple-mobile-web-app-capable"]',
+    );
     if (!metaApple) {
-      metaApple = document.createElement('meta');
-      metaApple.setAttribute('name', 'apple-mobile-web-app-capable');
+      metaApple = document.createElement("meta");
+      metaApple.setAttribute(
+        "name",
+        "apple-mobile-web-app-capable",
+      );
       document.head.appendChild(metaApple);
     }
-    metaApple.setAttribute('content', 'yes');
-    
-    // Set apple status bar style
-    let metaAppleStatus = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
-    if (!metaAppleStatus) {
-      metaAppleStatus = document.createElement('meta');
-      metaAppleStatus.setAttribute('name', 'apple-mobile-web-app-status-bar-style');
-      document.head.appendChild(metaAppleStatus);
-    }
-    metaAppleStatus.setAttribute('content', 'black-translucent');
-    
-    // Set manifest link
-    let linkManifest = document.querySelector('link[rel="manifest"]');
-    if (!linkManifest) {
-      linkManifest = document.createElement('link');
-      linkManifest.setAttribute('rel', 'manifest');
-      document.head.appendChild(linkManifest);
-    }
-    linkManifest.setAttribute('href', '/manifest.json');
-    
+    metaApple.setAttribute("content", "yes");
+
     // Set page title
-    document.title = 'Pill Timer';
+    document.title = "Pill Timer";
   }, []);
-  
-  // Initialize and handle date-based reset
+
+  // Check auth status on mount
   useEffect(() => {
-    const today = new Date().toDateString();
-    const stored = localStorage.getItem('pillpal-data');
-    
-    if (stored) {
-      const data: AppData = JSON.parse(stored);
-      
-      // Reset if it's a new day
-      if (data.lastOpenedDate !== today) {
-        const resetMeds = data.medications.map(med => ({ ...med, taken: false }));
-        setMedications(resetMeds);
-        saveToStorage(resetMeds);
-      } else {
-        setMedications(data.medications);
+    // Only check auth if database is confirmed to be set up
+    if (isDatabaseSetup !== true) return;
+
+    const initAuth = async () => {
+      try {
+        console.log("🔐 Checking for existing session...");
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        setSession(session);
+        setUser(session?.user || null);
+
+        if (session) {
+          console.log(
+            "✅ User logged in:",
+            session.user.email,
+            "User ID:",
+            session.user.id,
+          );
+          await loadMedications();
+        } else {
+          console.log("⚠️ No active session found");
+        }
+      } catch (error) {
+        console.error("❌ Error initializing auth:", error);
+      } finally {
+        setAuthLoading(false);
       }
-    } else {
-      // Add sample medications for testing
-      const sampleMeds: Medication[] = [
+    };
+
+    initAuth();
+
+    // Listen for auth changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log(
+        "🔄 Auth state changed:",
+        event,
+        session?.user?.email,
+      );
+      setSession(session);
+      setUser(session?.user || null);
+
+      if (session) {
+        console.log("✅ User authenticated:", session.user.id);
+        // Pass the session user directly to avoid race condition
+        loadMedications(session.user);
+      } else {
+        console.log("⚠️ User logged out");
+        setMedications([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [isDatabaseSetup]);
+
+  // Real-time subscriptions
+  useEffect(() => {
+    // Don't subscribe if database isn't set up or user not logged in
+    if (!user || isDatabaseSetup !== true) return;
+
+    // Subscribe to medication changes
+    const medicationChannel = supabase
+      .channel("medications_channel")
+      .on(
+        "postgres_changes",
         {
-          id: '1',
-          name: 'Aspirin',
-          time: '08:00',
-          dosage: '500mg',
-          taken: false,
-          daysNeeded: 30,
-          startDate: new Date().toISOString(),
-          endDate: new Date(new Date().getTime() + (30 * 24 * 60 * 60 * 1000)).toISOString(),
+          event: "*",
+          schema: "public",
+          table: "medications",
+          filter: `user_id=eq.${user.id}`,
         },
+        (payload) => {
+          console.log("Medication changed:", payload);
+          loadMedications();
+        },
+      )
+      .subscribe();
+
+    // Subscribe to log changes
+    const logsChannel = supabase
+      .channel("logs_channel")
+      .on(
+        "postgres_changes",
         {
-          id: '2',
-          name: 'Vitamin D',
-          time: '09:30',
-          dosage: '1000 IU',
-          taken: false,
-          daysNeeded: 90,
-          startDate: new Date(new Date().getTime() - (10 * 24 * 60 * 60 * 1000)).toISOString(),
-          endDate: new Date(new Date().getTime() + (80 * 24 * 60 * 60 * 1000)).toISOString(),
+          event: "*",
+          schema: "public",
+          table: "medication_logs",
+          filter: `user_id=eq.${user.id}`,
         },
-        {
-          id: '3',
-          name: 'Metformin',
-          time: '12:30',
-          dosage: '850mg',
-          taken: true,
-          daysNeeded: 60,
-          startDate: new Date(new Date().getTime() - (5 * 24 * 60 * 60 * 1000)).toISOString(),
-          endDate: new Date(new Date().getTime() + (55 * 24 * 60 * 60 * 1000)).toISOString(),
+        (payload) => {
+          console.log("Log changed:", payload);
+          loadMedications();
         },
-        {
-          id: '4',
-          name: 'Lisinopril',
-          time: '07:15',
-          dosage: '10mg',
-          taken: false,
-        },
-        {
-          id: '5',
-          name: 'Omega-3',
-          time: '20:00',
-          dosage: '1200mg',
-          taken: false,
-          daysNeeded: 45,
-          startDate: new Date(new Date().getTime() - (20 * 24 * 60 * 60 * 1000)).toISOString(),
-          endDate: new Date(new Date().getTime() + (25 * 24 * 60 * 60 * 1000)).toISOString(),
-        },
-        {
-          id: '6',
-          name: 'Amoxicillin',
-          time: '14:45',
-          dosage: '250mg',
-          taken: false,
-          daysNeeded: 7,
-          startDate: new Date(new Date().getTime() - (2 * 24 * 60 * 60 * 1000)).toISOString(),
-          endDate: new Date(new Date().getTime() + (5 * 24 * 60 * 60 * 1000)).toISOString(),
-        },
-        {
-          id: '7',
-          name: 'Ibuprofen',
-          time: '18:30',
-          dosage: '400mg',
-          taken: true,
-        },
-      ];
-      
-      setMedications(sampleMeds);
-      saveToStorage(sampleMeds);
-    }
-  }, []);
-  
+      )
+      .subscribe();
+
+    return () => {
+      medicationChannel.unsubscribe();
+      logsChannel.unsubscribe();
+    };
+  }, [user, isDatabaseSetup]);
+
   // Close context menu when clicking outside
   useEffect(() => {
     const handleClickOutside = () => {
@@ -304,373 +524,615 @@ export default function App() {
         setIsFilterOpen(false);
       }
     };
-    
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
+
+    document.addEventListener("click", handleClickOutside);
+    return () =>
+      document.removeEventListener("click", handleClickOutside);
   }, [openMenuId, isFilterOpen]);
-  
-  // // Check notification permission on mount
-  // useEffect(() => {
-  //   if ('Notification' in window) {
-  //     setNotificationPermission(Notification.permission);
-  //     const savedPref = localStorage.getItem('notifications-enabled');
-  //     if (savedPref === 'true' && Notification.permission === 'granted') {
-  //       setNotificationsEnabled(true);
-  //     }
-  //   }
-  // }, []);
-  
-  // // Request notification permission
-  // const requestNotificationPermission = async () => {
-  //   if (!('Notification' in window)) {
-  //     alert('This browser does not support notifications');
-  //     return;
-  //   }
-  //   
-  //   const permission = await Notification.requestPermission();
-  //   setNotificationPermission(permission);
-  //   
-  //   if (permission === 'granted') {
-  //     setNotificationsEnabled(true);
-  //     localStorage.setItem('notifications-enabled', 'true');
-  //   }
-  // };
-  
-  // // Toggle notifications
-  // const toggleNotifications = async () => {
-  //   if (!notificationsEnabled) {
-  //     if (notificationPermission !== 'granted') {
-  //       await requestNotificationPermission();
-  //       if (Notification.permission === 'granted') {
-  //         toast.success('🔔 Notifications enabled successfully!', {
-  //           description: 'You\'ll receive reminders 5 minutes before each medication',
-  //           duration: 4000,
-  //         });
-  //       }
-  //     } else {
-  //       setNotificationsEnabled(true);
-  //       localStorage.setItem('notifications-enabled', 'true');
-  //       toast.success('🔔 Notifications enabled successfully!', {
-  //         description: 'You\'ll receive reminders 5 minutes before each medication',
-  //         duration: 4000,
-  //       });
-  //     }
-  //   } else {
-  //     setNotificationsEnabled(false);
-  //     localStorage.setItem('notifications-enabled', 'false');
-  //     toast.info('Notifications disabled', {
-  //       description: 'You won\'t receive medication reminders',
-  //       duration: 3000,
-  //     });
-  //   }
-  // };
-  
-  // // Test notification function
-  // const sendTestNotification = async () => {
-  //   if (notificationPermission !== 'granted') {
-  //     toast.error('Notifications not allowed', {
-  //       description: 'Please enable notifications first',
-  //       duration: 3000,
-  //     });
-  //     return;
-  //   }
-  //   
-  //   try {
-  //     // Use Service Worker for notifications (required for PWA on Android)
-  //     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-  //       const registration = await navigator.serviceWorker.ready;
-  //       await registration.showNotification('💊 Pill Timer - Test', {
-  //         body: 'Notifications are working! You\'ll receive reminders 5 minutes before each medication.',
-  //         vibrate: [200, 100, 200],
-  //         tag: 'test-notification',
-  //         requireInteraction: false,
-  //       });
-  //       
-  //       toast.success('Test notification sent!', {
-  //         description: 'Check your notification tray',
-  //         duration: 3000,
-  //       });
-  //     } else {
-  //       // Fallback to regular Notification API
-  //       new Notification('💊 Pill Timer - Test', {
-  //         body: 'Notifications are working! You\'ll receive reminders 5 minutes before each medication.',
-  //         requireInteraction: false,
-  //         vibrate: [200, 100, 200],
-  //       });
-  //       
-  //       toast.success('Test notification sent!', {
-  //         description: 'Check your notification tray',
-  //         duration: 3000,
-  //       });
-  //     }
-  //   } catch (error) {
-  //     console.error('Notification error:', error);
-  //     toast.error('Notification failed', {
-  //       description: error instanceof Error ? error.message : 'Service Worker may not be ready. Try refreshing the app.',
-  //       duration: 5000,
-  //     });
-  //   }
-  // };
-  
-  // // Check for upcoming medications and send notifications
-  // useEffect(() => {
-  //   if (!notificationsEnabled || notificationPermission !== 'granted') return;
-  //   
-  //   const checkMedications = async () => {
-  //     const now = new Date();
-  //     const currentHours = now.getHours();
-  //     const currentMinutes = now.getMinutes();
-  //     
-  //     for (const med of medications) {
-  //       if (med.taken) continue; // Skip if already taken
-  //       
-  //       const [medHours, medMinutes] = med.time.split(':').map(Number);
-  //       
-  //       // Calculate time difference in minutes
-  //       const medTimeInMinutes = medHours * 60 + medMinutes;
-  //       const currentTimeInMinutes = currentHours * 60 + currentMinutes;
-  //       const timeDiff = medTimeInMinutes - currentTimeInMinutes;
-  //       
-  //       // Notify 5 minutes before
-  //       if (timeDiff === 5) {
-  //         try {
-  //           // Use Service Worker for notifications (better for PWA)
-  //           if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-  //             const registration = await navigator.serviceWorker.ready;
-  //             await registration.showNotification('💊 Pill Timer Reminder', {
-  //               body: `Time to take ${med.name}${med.dosage ? ` (${med.dosage})` : ''} in 5 minutes`,
-  //               vibrate: [200, 100, 200],
-  //               tag: `med-${med.id}`, // Prevent duplicate notifications
-  //               requireInteraction: false,
-  //             });
-  //           } else {
-  //             // Fallback to regular Notification API
-  //             new Notification('💊 Pill Timer Reminder', {
-  //               body: `Time to take ${med.name}${med.dosage ? ` (${med.dosage})` : ''} in 5 minutes`,
-  //               tag: med.id,
-  //               requireInteraction: false,
-  //               vibrate: [200, 100, 200],
-  //             });
-  //           }
-  //         } catch (error) {
-  //           console.error('Failed to send notification for', med.name, error);
-  //         }
-  //       }
-  //     }
-  //   };
-  //   
-  //   // Check every minute
-  //   const interval = setInterval(checkMedications, 60000);
-  //   
-  //   // Check immediately
-  //   checkMedications();
-  //   
-  //   return () => clearInterval(interval);
-  // }, [medications, notificationsEnabled, notificationPermission]);
-  
-  const saveToStorage = (meds: Medication[]) => {
-    const data: AppData = {
-      medications: meds,
-      lastOpenedDate: new Date().toDateString(),
-    };
-    localStorage.setItem('pillpal-data', JSON.stringify(data));
-  };
-  
-  const addMedication = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    let daysNeeded: number | undefined;
-    let startDate: string | undefined;
-    let endDate: string | undefined;
-    
-    // Mode 1: User entered days - convert to date range
-    if (durationMode === 'days' && newMed.daysNeeded) {
-      daysNeeded = parseInt(newMed.daysNeeded);
-      startDate = new Date().toISOString();
-      endDate = new Date(new Date().getTime() + (daysNeeded * 24 * 60 * 60 * 1000)).toISOString();
-    } 
-    // Mode 2: User entered date range - convert to days
-    else if (durationMode === 'dateRange' && dateRange.startDate && dateRange.endDate) {
-      const start = new Date(dateRange.startDate);
-      const end = new Date(dateRange.endDate);
-      const diffTime = Math.abs(end.getTime() - start.getTime());
-      daysNeeded = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end days
-      startDate = start.toISOString();
-      endDate = end.toISOString();
+
+  // Load medications
+  const loadMedications = async (userToLoad?: any) => {
+    // Use passed user or current user state
+    const currentUser = userToLoad || user;
+
+    // Don't try to load if database isn't set up
+    if (isDatabaseSetup !== true) {
+      console.log(
+        "⏸️ Skipping medication load - database not set up yet",
+      );
+      return;
     }
-    
-    const medication: Medication = {
-      id: Date.now().toString(),
-      name: newMed.name,
-      time: newMed.time,
-      dosage: newMed.dosage,
-      taken: false,
-      daysNeeded,
-      startDate,
-      endDate,
-    };
-    
-    const updated = [...medications, medication];
-    setMedications(updated);
-    saveToStorage(updated);
-    
-    setNewMed({ name: '', time: '', dosage: '', daysNeeded: '' });
-    setDateRange({ startDate: '', endDate: '' });
-    setDurationMode('days');
-    setIsAddModalOpen(false);
+
+    if (!currentUser) {
+      console.log(
+        "⏸️ Skipping medication load - no user logged in",
+      );
+      return;
+    }
+
+    try {
+      console.log(
+        "🔄 Loading medications for user:",
+        currentUser.id,
+      );
+      setLoading(true);
+      const today = new Date().toISOString().split("T")[0];
+      const result = await api.getMedications(today);
+
+      console.log("📊 API Response:", result);
+
+      if (result.success && result.medications) {
+        console.log(
+          `✅ Loaded ${result.medications.length} medications:`,
+          result.medications,
+        );
+
+        // Log the first medication to debug field mapping
+        if (result.medications.length > 0) {
+          console.log(
+            "🔍 First medication raw data:",
+            result.medications[0],
+          );
+        }
+
+        // Map backend snake_case fields to frontend camelCase
+        const mappedMedications = result.medications.map(
+          (med: any) => ({
+            id: med.id,
+            name: med.name,
+            time: med.time || med.scheduled_time, // Support both field names
+            dosage: med.dosage,
+            taken: med.taken,
+            personName: med.person_name,
+            daysNeeded: med.duration_days,
+            startDate: med.start_date,
+            endDate: med.end_date,
+          }),
+        );
+
+        console.log(
+          "🔍 First mapped medication:",
+          mappedMedications[0],
+        );
+
+        setMedications(mappedMedications);
+      } else {
+        console.error(
+          "❌ Error loading medications:",
+          result.error,
+        );
+        toast.error(
+          "Failed to load medications: " + result.error,
+        );
+      }
+    } catch (error) {
+      console.error("❌ Error loading medications:", error);
+      toast.error("Failed to load medications");
+    } finally {
+      setLoading(false);
+    }
   };
-  
-  const editMedication = (e: React.FormEvent) => {
+
+  // Auth handlers
+  const handleLogin = async (
+    email: string,
+    password: string,
+  ) => {
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      await api.signIn(email, password);
+      toast.success("Welcome back!");
+    } catch (error: any) {
+      console.error("Login error:", error);
+      setAuthError(error.message);
+      toast.error("Login failed");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignUp = async (
+    email: string,
+    password: string,
+    name: string,
+  ) => {
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      await api.signUp(email, password, name);
+      // Auto sign in after signup
+      await api.signIn(email, password);
+      toast.success("Account created successfully!");
+    } catch (error: any) {
+      console.error("Signup error:", error);
+      setAuthError(error.message);
+      toast.error("Signup failed");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.signOut();
+      setMedications([]);
+      toast.success("Logged out");
+    } catch (error) {
+      console.error("Logout error:", error);
+      toast.error("Logout failed");
+    }
+  };
+
+  const addMedication = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
+    try {
+      let daysNeeded: number | undefined;
+      let startDate: string | undefined;
+      let endDate: string | undefined;
+
+      // Mode 1: User entered days - convert to date range
+      if (durationMode === "days" && newMed.daysNeeded) {
+        daysNeeded = parseInt(newMed.daysNeeded);
+        startDate = new Date().toISOString();
+        endDate = new Date(
+          new Date().getTime() +
+            daysNeeded * 24 * 60 * 60 * 1000,
+        ).toISOString();
+      }
+      // Mode 2: User entered date range - convert to days
+      else if (
+        durationMode === "dateRange" &&
+        dateRange.startDate &&
+        dateRange.endDate
+      ) {
+        const start = new Date(dateRange.startDate);
+        const end = new Date(dateRange.endDate);
+        const diffTime = Math.abs(
+          end.getTime() - start.getTime(),
+        );
+        daysNeeded =
+          Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        startDate = start.toISOString();
+        endDate = end.toISOString();
+      }
+
+      const medication = {
+        id: crypto.randomUUID(),
+        name: newMed.name,
+        time: newMed.time,
+        dosage: newMed.dosage,
+        person_name: newMed.personName,
+        duration_days: daysNeeded,
+        start_date: startDate,
+        end_date: endDate,
+      };
+
+      // Save to Supabase
+      const { medication: savedMed } =
+        await api.addMedication(medication);
+
+      // Update local state
+      setMedications([
+        ...medications,
+        {
+          id: savedMed.id,
+          name: savedMed.name,
+          time: savedMed.time,
+          dosage: savedMed.dosage,
+          taken: false,
+          daysNeeded: savedMed.duration_days,
+          startDate: savedMed.start_date,
+          endDate: savedMed.end_date,
+          personName: savedMed.person_name,
+        },
+      ]);
+
+      // Reset form
+      setNewMed({
+        name: "",
+        time: "",
+        dosage: "",
+        daysNeeded: "",
+        personName: "",
+      });
+      setDateRange({ startDate: "", endDate: "" });
+      setDurationMode("days");
+      setIsAddModalOpen(false);
+
+      toast.success("💊 Medication added!");
+    } catch (error) {
+      console.error("Error adding medication:", error);
+      toast.error("Failed to add medication");
+    }
+  };
+
+  const editMedication = async (e: React.FormEvent) => {
+    e.preventDefault();
+
     if (!editingMed) return;
-    
-    let daysNeeded: number | undefined;
-    let startDate: string | undefined;
-    let endDate: string | undefined;
-    
-    // Mode 1: User entered days - convert to date range
-    if (durationMode === 'days' && newMed.daysNeeded) {
-      daysNeeded = parseInt(newMed.daysNeeded);
-      startDate = new Date().toISOString();
-      endDate = new Date(new Date().getTime() + (daysNeeded * 24 * 60 * 60 * 1000)).toISOString();
-    } 
-    // Mode 2: User entered date range - convert to days
-    else if (durationMode === 'dateRange' && dateRange.startDate && dateRange.endDate) {
-      const start = new Date(dateRange.startDate);
-      const end = new Date(dateRange.endDate);
-      const diffTime = Math.abs(end.getTime() - start.getTime());
-      daysNeeded = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end days
-      startDate = start.toISOString();
-      endDate = end.toISOString();
+
+    try {
+      let daysNeeded: number | undefined;
+      let startDate: string | undefined;
+      let endDate: string | undefined;
+
+      // Mode 1: User entered days - convert to date range
+      if (durationMode === "days" && newMed.daysNeeded) {
+        daysNeeded = parseInt(newMed.daysNeeded);
+        startDate = new Date().toISOString();
+        endDate = new Date(
+          new Date().getTime() +
+            daysNeeded * 24 * 60 * 60 * 1000,
+        ).toISOString();
+      }
+      // Mode 2: User entered date range - convert to days
+      else if (
+        durationMode === "dateRange" &&
+        dateRange.startDate &&
+        dateRange.endDate
+      ) {
+        const start = new Date(dateRange.startDate);
+        const end = new Date(dateRange.endDate);
+        const diffTime = Math.abs(
+          end.getTime() - start.getTime(),
+        );
+        daysNeeded =
+          Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        startDate = start.toISOString();
+        endDate = end.toISOString();
+      }
+
+      const updates = {
+        name: newMed.name,
+        time: newMed.time,
+        dosage: newMed.dosage,
+        person_name: newMed.personName,
+        duration_days: daysNeeded,
+        start_date: startDate,
+        end_date: endDate,
+      };
+
+      console.log("📝 Sending updates to API:", updates);
+
+      await api.updateMedication(editingMed.id, updates);
+
+      // Update local state
+      setMedications(
+        medications.map((med) =>
+          med.id === editingMed.id
+            ? {
+                ...med,
+                name: newMed.name,
+                time: newMed.time,
+                dosage: newMed.dosage,
+                personName: newMed.personName,
+                daysNeeded,
+                startDate,
+                endDate,
+              }
+            : med,
+        ),
+      );
+
+      setNewMed({
+        name: "",
+        time: "",
+        dosage: "",
+        daysNeeded: "",
+        personName: "",
+      });
+      setDateRange({ startDate: "", endDate: "" });
+      setDurationMode("days");
+      setEditingMed(null);
+
+      toast.success("✏️ Medication updated!");
+    } catch (error: any) {
+      console.error("❌ Error updating medication:", error);
+      toast.error(
+        `Failed to update: ${error.message || "Unknown error"}`,
+      );
     }
-    
-    const updated = medications.map(med =>
-      med.id === editingMed.id
-        ? { 
-            ...med, 
-            name: newMed.name, 
-            time: newMed.time, 
-            dosage: newMed.dosage,
-            daysNeeded,
-            startDate,
-            endDate,
-          }
-        : med
-    );
-    setMedications(updated);
-    saveToStorage(updated);
-    
-    setNewMed({ name: '', time: '', dosage: '', daysNeeded: '' });
-    setDateRange({ startDate: '', endDate: '' });
-    setDurationMode('days');
-    setEditingMed(null);
   };
-  
+
   const openEditModal = (med: Medication) => {
     setEditingMed(med);
-    setNewMed({ name: med.name, time: med.time, dosage: med.dosage || '', daysNeeded: med.daysNeeded ? med.daysNeeded.toString() : '' });
-    
+    setNewMed({
+      name: med.name,
+      time: med.time,
+      dosage: med.dosage || "",
+      daysNeeded: med.daysNeeded
+        ? med.daysNeeded.toString()
+        : "",
+      personName: med.personName || "",
+    });
+
     // If medication has date range data, populate it and switch to date range mode
     if (med.startDate && med.endDate) {
-      const startDate = new Date(med.startDate).toISOString().split('T')[0];
-      const endDate = new Date(med.endDate).toISOString().split('T')[0];
+      const startDate = new Date(med.startDate)
+        .toISOString()
+        .split("T")[0];
+      const endDate = new Date(med.endDate)
+        .toISOString()
+        .split("T")[0];
       setDateRange({ startDate, endDate });
-      // Optionally set mode to dateRange if user prefers to see the dates
-      // Comment out the line below if you want to default to "days" view
-      setDurationMode('dateRange');
+      setDurationMode("dateRange");
     }
   };
-  
+
   const closeModal = () => {
     setIsAddModalOpen(false);
     setEditingMed(null);
-    setNewMed({ name: '', time: '', dosage: '', daysNeeded: '' });
-    setDateRange({ startDate: '', endDate: '' });
-    setDurationMode('days');
+    setNewMed({
+      name: "",
+      time: "",
+      dosage: "",
+      daysNeeded: "",
+      personName: "",
+    });
+    setDateRange({ startDate: "", endDate: "" });
+    setDurationMode("days");
   };
-  
-  const toggleTaken = (id: string) => {
-    const updated = medications.map(med =>
-      med.id === id ? { ...med, taken: !med.taken } : med
-    );
-    setMedications(updated);
-    saveToStorage(updated);
+
+  const toggleTaken = async (id: string) => {
+    const medication = medications.find((m) => m.id === id);
+    if (!medication) return;
+
+    try {
+      console.log(
+        `🔄 Toggling taken status for: ${medication.name} (ID: ${id})`,
+      );
+
+      if (!medication.taken) {
+        // Mark as taken
+        console.log("📝 Marking as taken...", {
+          medicationId: id,
+          scheduledTime: medication.time,
+          markedBy:
+            user?.user_metadata?.name || medication.personName,
+        });
+
+        const result = await api.markAsTaken(
+          id,
+          medication.time,
+          user?.user_metadata?.name || medication.personName,
+        );
+        console.log("✅ Mark as taken result:", result);
+
+        // Update local state
+        setMedications(
+          medications.map((m) =>
+            m.id === id ? { ...m, taken: true } : m,
+          ),
+        );
+
+        toast.success(`✓ ${medication.name} marked as taken!`);
+      } else {
+        // Unmark as taken
+        console.log("🔙 Unmarking as taken...");
+        const result = await api.unmarkAsTaken(id);
+        console.log("✅ Unmark result:", result);
+
+        // Update local state
+        setMedications(
+          medications.map((m) =>
+            m.id === id ? { ...m, taken: false } : m,
+          ),
+        );
+
+        toast.success(`${medication.name} unmarked`);
+      }
+    } catch (error: any) {
+      console.error("❌ Error toggling taken status:", error);
+      toast.error(
+        `Failed to update status: ${error.message || "Unknown error"}`,
+      );
+    }
   };
-  
-  const deleteMedication = (id: string) => {
-    const updated = medications.filter(med => med.id !== id);
-    setMedications(updated);
-    saveToStorage(updated);
+
+  const deleteMedication = async (id: string) => {
+    try {
+      await api.deleteMedication(id);
+      setMedications(medications.filter((m) => m.id !== id));
+      toast.success("🗑️ Medication deleted");
+    } catch (error) {
+      console.error("Error deleting medication:", error);
+      toast.error("Failed to delete medication");
+    }
   };
-  
-  const duplicateMedication = (med: Medication) => {
-    const duplicated: Medication = {
-      ...med,
-      id: Date.now().toString(),
-      taken: false,
-      startDate: med.daysNeeded ? new Date().toISOString() : med.startDate,
-      endDate: med.daysNeeded ? new Date(new Date().getTime() + (med.daysNeeded * 24 * 60 * 60 * 1000)).toISOString() : med.endDate,
-    };
-    
-    const updated = [...medications, duplicated];
-    setMedications(updated);
-    saveToStorage(updated);
+
+  const duplicateMedication = async (med: Medication) => {
+    try {
+      const duplicated = {
+        id: crypto.randomUUID(),
+        name: med.name + " (Copy)",
+        time: med.time,
+        dosage: med.dosage,
+        person_name: med.personName,
+        duration_days: med.daysNeeded,
+        start_date: med.daysNeeded
+          ? new Date().toISOString()
+          : med.startDate,
+        end_date: med.daysNeeded
+          ? new Date(
+              new Date().getTime() +
+                med.daysNeeded * 24 * 60 * 60 * 1000,
+            ).toISOString()
+          : med.endDate,
+      };
+
+      const { medication: savedMed } =
+        await api.addMedication(duplicated);
+
+      setMedications([
+        ...medications,
+        {
+          id: savedMed.id,
+          name: savedMed.name,
+          time: savedMed.time,
+          dosage: savedMed.dosage,
+          taken: false,
+          daysNeeded: savedMed.duration_days,
+          startDate: savedMed.start_date,
+          endDate: savedMed.end_date,
+          personName: savedMed.person_name,
+        },
+      ]);
+
+      toast.success("📋 Medication duplicated!");
+    } catch (error) {
+      console.error("Error duplicating medication:", error);
+      toast.error("Failed to duplicate medication");
+    }
   };
-  
+
   // Greeting based on time
   const getGreeting = () => {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Good Morning';
-    if (hour < 18) return 'Good Afternoon';
-    return 'Good Evening';
+    if (hour < 12) return "Good Morning";
+    if (hour < 18) return "Good Afternoon";
+    return "Good Evening";
   };
-  
+
   // Calculate progress
-  const takenCount = medications.filter(m => m.taken).length;
+  const takenCount = medications.filter((m) => m.taken).length;
   const totalCount = medications.length;
-  const progress = totalCount > 0 ? (takenCount / totalCount) * 100 : 0;
-  
+  const progress =
+    totalCount > 0 ? (takenCount / totalCount) * 100 : 0;
+
   // Helper function to calculate days remaining
   const getDaysRemaining = (med: Medication) => {
     if (!med.daysNeeded || !med.startDate) return null;
-    
+
     const start = new Date(med.startDate);
     const today = new Date();
-    const diffTime = Math.abs(today.getTime() - start.getTime());
-    const daysElapsed = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const diffTime = Math.abs(
+      today.getTime() - start.getTime(),
+    );
+    const daysElapsed = Math.ceil(
+      diffTime / (1000 * 60 * 60 * 24),
+    );
     const daysRemaining = med.daysNeeded - daysElapsed;
-    
+
     return {
       daysElapsed,
       daysRemaining: Math.max(0, daysRemaining),
       daysNeeded: med.daysNeeded,
-      progress: Math.min(100, (daysElapsed / med.daysNeeded) * 100),
-      isComplete: daysRemaining <= 0
+      progress: Math.min(
+        100,
+        (daysElapsed / med.daysNeeded) * 100,
+      ),
+      isComplete: daysRemaining <= 0,
     };
   };
-  
-  // Sort medications by time
-  const sortedMedications = [...medications].sort((a, b) => {
-    if (sortBy === 'time') return a.time.localeCompare(b.time);
-    if (sortBy === 'name') return a.name.localeCompare(b.name);
-    if (sortBy === 'status') return a.taken ? 1 : -1;
-    return 0;
-  }).filter(med => showCompleted || !med.taken);
-  
+
+  // Helper function to check if medication is active on a specific date
+  const isActiveOnDate = (med: Medication, date: Date) => {
+    // If no date range specified, medication is always active
+    if (!med.startDate || !med.endDate) return true;
+
+    const checkDate = new Date(date);
+    checkDate.setHours(0, 0, 0, 0);
+
+    const start = new Date(med.startDate);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(med.endDate);
+    end.setHours(0, 0, 0, 0);
+
+    // Check if the date is within the date range
+    return checkDate >= start && checkDate <= end;
+  };
+
+  // Get medications for a specific date
+  const getMedicationsForDate = (date: Date) => {
+    let filtered = medications.filter((m) =>
+      isActiveOnDate(m, date),
+    );
+
+    if (!showCompleted) {
+      filtered = filtered.filter((m) => !m.taken);
+    }
+
+    return filtered.sort((a, b) => {
+      if (sortBy === "time") {
+        return a.time.localeCompare(b.time);
+      } else if (sortBy === "name") {
+        return a.name.localeCompare(b.name);
+      } else if (sortBy === "status") {
+        return a.taken === b.taken ? 0 : a.taken ? 1 : -1;
+      }
+      return 0;
+    });
+  };
+
+  // Get today's and tomorrow's medications
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const todaysMedications = getMedicationsForDate(today);
+  const tomorrowsMedications = getMedicationsForDate(tomorrow);
+
+  // Show loading spinner
+  if (authLoading || isDatabaseSetup === null) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block w-12 h-12 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-slate-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show setup screen if database not set up
+  if (isDatabaseSetup === false) {
+    return (
+      <>
+        <DatabaseSetup
+          onComplete={async () => {
+            // Re-check database setup
+            const result = await api.checkDatabaseSetup();
+            setIsDatabaseSetup(result.isSetup);
+
+            if (result.isSetup) {
+              toast.success(" Database is ready!");
+              // Reload the page to start fresh
+              window.location.reload();
+            }
+          }}
+        />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+
+  // Show auth screen if not logged in
+  if (!user) {
+    return (
+      <>
+        <Auth
+          onLogin={handleLogin}
+          onSignUp={handleSignUp}
+          error={authError || undefined}
+          loading={authLoading}
+        />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      {/* Toast Notifications */}
-      <Toaster 
-        position="top-center"
-        expand={false}
-        richColors
-        closeButton
-      />
-      
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-24">
+      <Toaster position="top-center" richColors />
+
       {/* Header */}
-      <header className="bg-white border-b border-slate-200">
-        <div className="max-w-2xl mx-auto px-6 py-6">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-40">
+        <div className="max-w-4xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="p-2.5 bg-slate-900 rounded-xl">
@@ -678,371 +1140,437 @@ export default function App() {
               </div>
               <div>
                 <h1 className="text-slate-900">Pill Timer</h1>
-                <p className="text-slate-500">{getGreeting()}</p>
+                <p className="text-slate-600">
+                  Family Medication Tracker
+                </p>
               </div>
             </div>
-            
-            {/* Notification Toggle */}
-            {/* <button
-              onClick={toggleNotifications}
-              className={`p-2.5 rounded-xl transition-colors ${
-                notificationsEnabled
-                  ? 'bg-blue-50 text-blue-600'
-                  : 'bg-slate-100 text-slate-500'
-              }`}
-              title={notificationsEnabled ? 'Notifications enabled' : 'Enable notifications'}
-            >
-              {notificationsEnabled ? (
-                <Bell className="w-5 h-5" />
-              ) : (
-                <BellOff className="w-5 h-5" />
+            <div className="flex items-center gap-2">
+              {user?.user_metadata?.name && (
+                <div className="hidden sm:flex items-center gap-2 px-3 py-2 bg-slate-100 rounded-lg">
+                  <Users className="w-4 h-4 text-slate-600" />
+                  <span className="text-slate-700">
+                    {user.user_metadata.name}
+                  </span>
+                </div>
               )}
-            </button> */}
+              <button
+                onClick={handleLogout}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-5 h-5 text-slate-600" />
+              </button>
+            </div>
           </div>
         </div>
       </header>
-      
+
       {/* Main Content */}
-      <main className="max-w-2xl mx-auto px-6 py-8 pb-24">
-        {/* Notification Help Banner - Show when notifications are NOT enabled but available */}
-        {/* {!notificationsEnabled && 'Notification' in window && (
-          <Card className="p-4 mb-6 bg-blue-50 border border-blue-100">
-            <div className="flex gap-3">
-              <Bell className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="text-blue-900 mb-1">Enable Notifications</h3>
-                <p className="text-blue-700 text-sm mb-3">
-                  Get reminded 5 minutes before each medication time. 
-                </p>
-                <div className="text-blue-600 text-sm space-y-2">
-                  <p><strong>📱 On Mobile:</strong></p>
-                  <ol className="list-decimal list-inside space-y-1 ml-2">
-                    <li>Tap the bell icon above</li>
-                    <li>Allow notifications when prompted</li>
-                    <li>Keep this tab/app open for timely alerts</li>
-                    <li>For best results, add to home screen (Install as App)</li>
-                  </ol>
-                  <p className="mt-3"><strong>💡 Tip:</strong> Install as a PWA for background notifications even when browser is minimized!</p>
-                </div>
-                <Button
-                  onClick={toggleNotifications}
-                  variant="primary"
-                  size="sm"
-                  className="mt-3 bg-blue-600 hover:bg-blue-700"
-                >
-                  <Bell className="w-4 h-4 mr-2" />
-                  Enable Now
-                </Button>
+      <main className="max-w-4xl mx-auto px-4 py-6">
+        {/* Greeting & Progress */}
+        <div className="mb-6">
+          <h2 className="text-slate-900 mb-4">
+            {getGreeting()}!
+          </h2>
+
+          <Card className="p-5 border border-slate-200">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Activity className="w-5 h-5 text-slate-700" />
+                <span className="text-slate-900">
+                  Today's Progress
+                </span>
               </div>
-              <button
-                onClick={(e) => {
-                  e.currentTarget.parentElement?.parentElement?.remove();
-                }}
-                className="text-blue-400 hover:text-blue-600 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <span className="text-slate-700">
+                {takenCount}/{totalCount}
+              </span>
             </div>
+            <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500 rounded-full"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <p className="text-slate-500 mt-2">
+              {takenCount === totalCount && totalCount > 0
+                ? "🎉 All medications taken!"
+                : `${totalCount - takenCount} medication${totalCount - takenCount !== 1 ? "s" : ""} remaining`}
+            </p>
           </Card>
-        )} */}
-        
-        {/* Progress Card */}
-        <Card className="p-6 mb-6 shadow-sm">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-green-50 rounded-lg">
-              <Activity className="w-5 h-5 text-green-600" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-slate-900">Daily Progress</h3>
-              <p className="text-slate-500">
-                {takenCount} of {totalCount} medications taken
-              </p>
-            </div>
-            <div className="text-slate-900">
-              {Math.round(progress)}%
-            </div>
-          </div>
-          
-          {/* Progress Bar */}
-          <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden mb-4">
-            <div
-              className="h-full bg-gradient-to-r from-green-500 to-green-600 rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          
-          {/* Test Notification Button - Only show when notifications are enabled */}
-          {/* {notificationsEnabled && (
-            <Button
-              onClick={sendTestNotification}
-              variant="secondary"
-              size="sm"
-              className="w-full"
+        </div>
+
+        {/* Filter & Sort */}
+        <div className="flex items-center gap-3 mb-4">
+          <span className="text-slate-500">
+            Medications Schedule
+          </span>
+
+          <div className="flex-1" />
+
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsFilterOpen(!isFilterOpen);
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors font-[Poppins]"
             >
-              <Bell className="w-4 h-4 mr-2" />
-              Send Test Notification
-            </Button>
-          )} */}
-        </Card>
-        
-        {/* Medications List */}
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-slate-900">Today's Schedule</h2>
-          <div className="flex items-center gap-3">
-            <span className="text-slate-500">{sortedMedications.length} items</span>
-            
-            {/* Sort/Filter Button */}
-            <div className="relative">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsFilterOpen(!isFilterOpen);
-                }}
-                className="p-2 rounded-lg hover:bg-white transition-colors border border-slate-200"
-              >
-                <SlidersHorizontal className="w-5 h-5 text-slate-600" />
-              </button>
-              
-              {/* Filter Dropdown */}
-              {isFilterOpen && (
-                <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-lg border border-slate-200 py-2 z-10 animate-fadeIn">
-                  {/* Sort By Section */}
-                  <div className="px-4 py-2">
-                    <p className="text-slate-500 mb-2">Sort by</p>
-                    <div className="space-y-1">
-                      <button
-                        onClick={() => {
-                          setSortBy('time');
-                          setIsFilterOpen(false);
-                        }}
-                        className={`w-full px-3 py-2 rounded-lg text-left transition-colors ${
-                          sortBy === 'time'
-                            ? 'bg-slate-900 text-white'
-                            : 'hover:bg-slate-50 text-slate-700'
-                        }`}
-                      >
-                        Time (Upcoming)
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSortBy('name');
-                          setIsFilterOpen(false);
-                        }}
-                        className={`w-full px-3 py-2 rounded-lg text-left transition-colors ${
-                          sortBy === 'name'
-                            ? 'bg-slate-900 text-white'
-                            : 'hover:bg-slate-50 text-slate-700'
-                        }`}
-                      >
-                        Name (A-Z)
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSortBy('status');
-                          setIsFilterOpen(false);
-                        }}
-                        className={`w-full px-3 py-2 rounded-lg text-left transition-colors ${
-                          sortBy === 'status'
-                            ? 'bg-slate-900 text-white'
-                            : 'hover:bg-slate-50 text-slate-700'
-                        }`}
-                      >
-                        Status (Unchecked First)
-                      </button>
-                    </div>
-                  </div>
-                  
-                  {/* Divider */}
-                  <div className="h-px bg-slate-200 my-2" />
-                  
-                  {/* Show/Hide Completed */}
-                  <div className="px-4 py-2">
-                    <button
-                      onClick={() => setShowCompleted(!showCompleted)}
-                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-slate-50 transition-colors"
-                    >
-                      <span className="text-slate-700">Show Completed</span>
-                      <div
-                        className={`w-11 h-6 rounded-full transition-colors ${
-                          showCompleted ? 'bg-green-500' : 'bg-slate-200'
-                        }`}
-                      >
-                        <div
-                          className={`w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200 mt-0.5 ${
-                            showCompleted ? 'translate-x-5' : 'translate-x-0.5'
+              <SlidersHorizontal className="w-4 h-4 text-slate-600" />
+              <span className="text-slate-700">
+                Sort & Filter
+              </span>
+            </button>
+
+            {isFilterOpen && (
+              <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-lg border border-slate-200 p-4 z-10">
+                <div className="mb-4">
+                  <label className="block text-slate-700 mb-2">
+                    Sort By
+                  </label>
+                  <div className="space-y-2">
+                    {(["time", "name", "status"] as const).map(
+                      (option) => (
+                        <button
+                          key={option}
+                          onClick={() => setSortBy(option)}
+                          className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                            sortBy === option
+                              ? "bg-slate-900 text-white"
+                              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                           }`}
-                        />
-                      </div>
-                    </button>
+                        >
+                          {option === "time"
+                            ? "Time"
+                            : option === "name"
+                              ? "Name"
+                              : "Status"}
+                        </button>
+                      ),
+                    )}
                   </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-200">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showCompleted}
+                      onChange={(e) =>
+                        setShowCompleted(e.target.checked)
+                      }
+                      className="w-4 h-4 rounded border-slate-300"
+                    />
+                    <span className="text-slate-700">
+                      Show completed
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Medications List */}
+        {loading ? (
+          <div className="text-center py-12">
+            <div className="inline-block w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mb-3" />
+            <p className="text-slate-600">
+              Loading medications...
+            </p>
+          </div>
+        ) : medications.length === 0 ? (
+          <Card className="p-12 text-center border border-slate-200">
+            <Pill className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+            <p className="text-slate-600 mb-2">
+              No medications yet
+            </p>
+            <p className="text-slate-500 mb-6">
+              Add your first medication to get started
+            </p>
+            <Button onClick={() => setIsAddModalOpen(true)}>
+              <Plus className="w-5 h-5 mr-2" />
+              Add Medication
+            </Button>
+          </Card>
+        ) : (
+          <div className="space-y-8">
+            {/* Today's Schedule */}
+            <div>
+              <h3 className="text-slate-900 mb-3">
+                Today's Schedule
+              </h3>
+              {todaysMedications.length === 0 ? (
+                <Card className="p-6 text-center border border-slate-200">
+                  <p className="text-slate-500">
+                    No medications scheduled for today
+                  </p>
+                </Card>
+              ) : (
+                <div className="space-y-3">
+                  {todaysMedications.map((med) => {
+                    const daysInfo = getDaysRemaining(med);
+
+                    return (
+                      <Card
+                        key={med.id}
+                        className="p-4 border border-slate-200"
+                      >
+                        <div className="flex items-start gap-3">
+                          {/* Checkbox */}
+                          <button
+                            onClick={() => toggleTaken(med.id)}
+                            className={`flex-shrink-0 w-6 h-6 rounded-lg border-2 transition-all ${
+                              med.taken
+                                ? "bg-green-500 border-green-500"
+                                : "border-slate-300 hover:border-slate-400"
+                            }`}
+                          >
+                            {med.taken && (
+                              <Check className="w-5 h-5 text-white" />
+                            )}
+                          </button>
+
+                          {/* Content */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <div className="flex-1 min-w-0">
+                                <h3
+                                  className={`text-slate-900 ${med.taken ? "line-through opacity-50" : ""}`}
+                                >
+                                  {med.personName
+                                    ? `${med.personName}'s ${med.name}`
+                                    : med.name}
+                                </h3>
+                                {med.dosage && (
+                                  <p className="text-slate-500">
+                                    {med.dosage}
+                                  </p>
+                                )}
+                              </div>
+
+                              {/* Menu */}
+                              <div className="relative">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenMenuId(
+                                      openMenuId === med.id
+                                        ? null
+                                        : med.id,
+                                    );
+                                  }}
+                                  className="p-1 hover:bg-slate-100 rounded-lg transition-colors"
+                                >
+                                  <MoreVertical className="w-5 h-5 text-slate-500" />
+                                </button>
+
+                                {openMenuId === med.id && (
+                                  <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-xl shadow-lg border border-slate-200 py-1 z-10">
+                                    <button
+                                      onClick={() => {
+                                        openEditModal(med);
+                                        setOpenMenuId(null);
+                                      }}
+                                      className="w-full text-left px-4 py-2 hover:bg-slate-50 flex items-center gap-2"
+                                    >
+                                      <Pencil className="w-4 h-4 text-slate-600" />
+                                      <span className="text-slate-700">
+                                        Edit
+                                      </span>
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        duplicateMedication(
+                                          med,
+                                        );
+                                        setOpenMenuId(null);
+                                      }}
+                                      className="w-full text-left px-4 py-2 hover:bg-slate-50 flex items-center gap-2"
+                                    >
+                                      <Copy className="w-4 h-4 text-slate-600" />
+                                      <span className="text-slate-700">
+                                        Duplicate
+                                      </span>
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        if (
+                                          confirm(
+                                            `Delete ${med.name}?`,
+                                          )
+                                        ) {
+                                          deleteMedication(
+                                            med.id,
+                                          );
+                                        }
+                                        setOpenMenuId(null);
+                                      }}
+                                      className="w-full text-left px-4 py-2 hover:bg-red-50 flex items-center gap-2"
+                                    >
+                                      <Trash2 className="w-4 h-4 text-red-600" />
+                                      <span className="text-red-600">
+                                        Delete
+                                      </span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-4 text-slate-500">
+                              <span className="flex items-center gap-1">
+                                🕐 {formatTime(med.time)}
+                              </span>
+                            </div>
+
+                            {/* Progress bar for duration */}
+                            {daysInfo && (
+                              <div className="mt-3 pt-3 border-t border-slate-100">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-slate-600">
+                                    {daysInfo.isComplete
+                                      ? "Treatment Complete"
+                                      : `${daysInfo.daysRemaining} day${daysInfo.daysRemaining !== 1 ? "s" : ""} remaining`}
+                                  </span>
+                                  <span className="text-slate-400">
+                                    {daysInfo.daysElapsed}/
+                                    {daysInfo.daysNeeded} days
+                                  </span>
+                                </div>
+                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-500 ${
+                                      daysInfo.isComplete
+                                        ? "bg-gradient-to-r from-green-500 to-green-600"
+                                        : "bg-gradient-to-r from-blue-500 to-blue-600"
+                                    }`}
+                                    style={{
+                                      width: `${daysInfo.progress}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Tomorrow's Schedule */}
+            <div>
+              <h3 className="text-slate-900 mb-3">
+                Tomorrow's Schedule
+              </h3>
+              {tomorrowsMedications.length === 0 ? (
+                <Card className="p-6 text-center border border-slate-200">
+                  <p className="text-slate-500">
+                    No medications scheduled for tomorrow
+                  </p>
+                </Card>
+              ) : (
+                <div className="space-y-3">
+                  {tomorrowsMedications.map((med) => {
+                    const daysInfo = getDaysRemaining(med);
+
+                    return (
+                      <Card
+                        key={med.id}
+                        className="p-4 border border-slate-200 opacity-75"
+                      >
+                        <div className="flex items-start gap-3">
+                          {/* Disabled checkbox for tomorrow */}
+                          <div className="flex-shrink-0 w-6 h-6 rounded-lg border-2 border-slate-200 bg-slate-50" />
+
+                          {/* Content */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <div className="flex-1 min-w-0">
+                                <h3 className="text-slate-700">
+                                  {med.personName
+                                    ? `${med.personName}'s ${med.name}`
+                                    : med.name}
+                                </h3>
+                                {med.dosage && (
+                                  <p className="text-slate-400">
+                                    {med.dosage}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-4 text-slate-400">
+                              <span className="flex items-center gap-1">
+                                🕐 {formatTime(med.time)}
+                              </span>
+                            </div>
+
+                            {/* Progress bar for duration */}
+                            {daysInfo && (
+                              <div className="mt-3 pt-3 border-t border-slate-100">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-slate-500">
+                                    {daysInfo.isComplete
+                                      ? "Treatment Complete"
+                                      : `${daysInfo.daysRemaining} day${daysInfo.daysRemaining !== 1 ? "s" : ""} remaining`}
+                                  </span>
+                                  <span className="text-slate-400">
+                                    {daysInfo.daysElapsed}/
+                                    {daysInfo.daysNeeded} days
+                                  </span>
+                                </div>
+                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-500 ${
+                                      daysInfo.isComplete
+                                        ? "bg-gradient-to-r from-green-500 to-green-600"
+                                        : "bg-gradient-to-r from-blue-500 to-blue-600"
+                                    }`}
+                                    style={{
+                                      width: `${daysInfo.progress}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
             </div>
           </div>
-        </div>
-        
-        {sortedMedications.length === 0 ? (
-          <Card className="p-12 text-center">
-            <div className="inline-flex p-4 bg-slate-50 rounded-2xl mb-4">
-              <Pill className="w-8 h-8 text-slate-400" />
-            </div>
-            <p className="text-slate-500 mb-2">No medications scheduled</p>
-            <p className="text-slate-400">
-              Tap the + button to add your first medication
-            </p>
-          </Card>
-        ) : (
-          <div className="space-y-3">
-            {sortedMedications.map((med) => {
-              const daysInfo = getDaysRemaining(med);
-              
-              return (
-              <Card
-                key={med.id}
-                className={`p-4 shadow-sm transition-all duration-300 ${
-                  med.taken ? 'bg-slate-50 opacity-60' : 'hover:shadow-md'
-                }`}
-              >
-                <div className="flex items-center gap-4 mb-2">
-                  {/* Checkbox */}
-                  <button
-                    onClick={() => toggleTaken(med.id)}
-                    className={`flex-shrink-0 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-200 ${
-                      med.taken
-                        ? 'bg-green-500 border-green-500'
-                        : 'border-slate-300 hover:border-slate-400'
-                    }`}
-                  >
-                    {med.taken && <Check className="w-4 h-4 text-white" />}
-                  </button>
-                  
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <h3
-                      className={`text-slate-900 ${
-                        med.taken ? 'line-through' : ''
-                      }`}
-                    >
-                      {med.name}
-                    </h3>
-                    <div className="flex items-center gap-3 text-slate-500">
-                      <span>{med.time}</span>
-                      {med.dosage && (
-                        <>
-                          <span>•</span>
-                          <span>{med.dosage}</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {/* Three-Dot Context Menu */}
-                  <div className="relative flex-shrink-0">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setOpenMenuId(openMenuId === med.id ? null : med.id);
-                      }}
-                      className="p-2 rounded-lg hover:bg-slate-100 transition-colors"
-                    >
-                      <MoreVertical className="w-5 h-5 text-slate-500" />
-                    </button>
-                    
-                    {/* Dropdown Menu */}
-                    {openMenuId === med.id && (
-                      <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-xl shadow-lg border border-slate-200 py-1 z-10 animate-fadeIn">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openEditModal(med);
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-slate-50 transition-colors"
-                        >
-                          <Pencil className="w-4 h-4 text-slate-500" />
-                          <span className="text-slate-700">Edit</span>
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            duplicateMedication(med);
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-slate-50 transition-colors"
-                        >
-                          <Copy className="w-4 h-4 text-blue-500" />
-                          <span className="text-slate-700">Duplicate</span>
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteMedication(med.id);
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-red-50 transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-500" />
-                          <span className="text-red-600">Delete</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                
-                {/* Days Remaining Section */}
-                {daysInfo && (
-                  <div className="mt-3 pt-3 border-t border-slate-100">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className={`w-2 h-2 rounded-full ${
-                          daysInfo.isComplete ? 'bg-green-500' : 'bg-blue-500'
-                        }`} />
-                        <span className="text-slate-600">
-                          {daysInfo.isComplete ? (
-                            'Treatment Complete'
-                          ) : (
-                            `${daysInfo.daysRemaining} day${daysInfo.daysRemaining !== 1 ? 's' : ''} remaining`
-                          )}
-                        </span>
-                      </div>
-                      <span className="text-slate-400">
-                        {daysInfo.daysElapsed}/{daysInfo.daysNeeded} days
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-500 ${
-                          daysInfo.isComplete
-                            ? 'bg-gradient-to-r from-green-500 to-green-600'
-                            : 'bg-gradient-to-r from-blue-500 to-blue-600'
-                        }`}
-                        style={{ width: `${daysInfo.progress}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </Card>
-              );
-            })}
-          </div>
         )}
       </main>
-      
-      {/* Floating Action Button */}
-      <button
-        onClick={() => setIsAddModalOpen(true)}
-        className="fixed bottom-8 right-8 p-4 bg-slate-900 text-white rounded-2xl shadow-2xl hover:bg-slate-800 active:scale-95 transition-all duration-200 hover:shadow-3xl"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
-      
+
+      {/* Floating Action Button - only show when medications exist */}
+      {medications.length > 0 && (
+        <button
+          onClick={() => setIsAddModalOpen(true)}
+          className="fixed bottom-8 right-8 p-4 bg-slate-900 text-white rounded-2xl shadow-2xl hover:bg-slate-800 active:scale-95 transition-all duration-200 hover:shadow-3xl"
+        >
+          <Plus className="w-6 h-6" />
+        </button>
+      )}
+
       {/* Add/Edit Medication Modal */}
       <Modal
         isOpen={isAddModalOpen || editingMed !== null}
         onClose={closeModal}
-        title={editingMed ? "Edit Medication" : "Add Medication"}
+        title={
+          editingMed ? "Edit Medication" : "Add Medication"
+        }
       >
-        <form onSubmit={editingMed ? editMedication : addMedication} className="space-y-4">
+        <form
+          onSubmit={editingMed ? editMedication : addMedication}
+          className="space-y-4"
+        >
           <div>
             <label className="block text-slate-700 mb-2">
               Medication Name
@@ -1051,11 +1579,33 @@ export default function App() {
               type="text"
               placeholder="e.g., Aspirin"
               value={newMed.name}
-              onChange={(e) => setNewMed({ ...newMed, name: e.target.value })}
+              onChange={(e) =>
+                setNewMed({ ...newMed, name: e.target.value })
+              }
               required
             />
           </div>
-          
+
+          <div>
+            <label className="block text-slate-700 mb-2">
+              Person Name (Optional)
+            </label>
+            <Input
+              type="text"
+              placeholder="e.g., John, Sarah, Mom"
+              value={newMed.personName}
+              onChange={(e) =>
+                setNewMed({
+                  ...newMed,
+                  personName: e.target.value,
+                })
+              }
+            />
+            <p className="text-slate-500 mt-1">
+              Track which family member this medication is for
+            </p>
+          </div>
+
           <div>
             <label className="block text-slate-700 mb-2">
               Time
@@ -1063,67 +1613,75 @@ export default function App() {
             <Input
               type="time"
               value={newMed.time}
-              onChange={(e) => setNewMed({ ...newMed, time: e.target.value })}
+              onChange={(e) =>
+                setNewMed({ ...newMed, time: e.target.value })
+              }
               required
             />
           </div>
-          
+
           <div>
             <label className="block text-slate-700 mb-2">
-              Dosage <span className="text-slate-400">(optional)</span>
+              Dosage (Optional)
             </label>
             <Input
               type="text"
               placeholder="e.g., 500mg"
               value={newMed.dosage}
-              onChange={(e) => setNewMed({ ...newMed, dosage: e.target.value })}
+              onChange={(e) =>
+                setNewMed({ ...newMed, dosage: e.target.value })
+              }
             />
           </div>
-          
-          {/* Duration Section */}
+
           <div>
-            <label className="block text-slate-700 mb-3">
-              Treatment Duration <span className="text-slate-400">(optional)</span>
+            <label className="block text-slate-700 mb-2">
+              Duration (Optional)
             </label>
-            
-            {/* Duration Mode Toggle */}
+
+            {/* Toggle between Days and Date Range */}
             <div className="flex gap-2 mb-3">
               <button
                 type="button"
-                onClick={() => setDurationMode('days')}
-                className={`flex-1 px-4 py-2.5 rounded-xl transition-all ${ 
-                  durationMode === 'days'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                onClick={() => setDurationMode("days")}
+                className={`flex-1 px-4 py-2.5 rounded-xl transition-all ${
+                  durationMode === "days"
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                 }`}
               >
                 Days
               </button>
               <button
                 type="button"
-                onClick={() => setDurationMode('dateRange')}
+                onClick={() => setDurationMode("dateRange")}
                 className={`flex-1 px-4 py-2.5 rounded-xl transition-all ${
-                  durationMode === 'dateRange'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  durationMode === "dateRange"
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                 }`}
               >
                 Date Range
               </button>
             </div>
-            
+
             {/* Days Input */}
-            {durationMode === 'days' && (
+            {durationMode === "days" && (
               <Input
                 type="number"
                 placeholder="e.g., 30"
                 value={newMed.daysNeeded}
-                onChange={(e) => setNewMed({ ...newMed, daysNeeded: e.target.value })}
+                onChange={(e) =>
+                  setNewMed({
+                    ...newMed,
+                    daysNeeded: e.target.value,
+                  })
+                }
               />
             )}
-            
+
             {/* Date Range Inputs */}
-            {durationMode === 'dateRange' && (
+            {durationMode === "dateRange" && (
               <div className="space-y-3">
                 <div>
                   <label className="block text-slate-600 mb-1.5">
@@ -1132,7 +1690,12 @@ export default function App() {
                   <Input
                     type="date"
                     value={dateRange.startDate}
-                    onChange={(e) => setDateRange({ ...dateRange, startDate: e.target.value })}
+                    onChange={(e) =>
+                      setDateRange({
+                        ...dateRange,
+                        startDate: e.target.value,
+                      })
+                    }
                   />
                 </div>
                 <div>
@@ -1142,13 +1705,18 @@ export default function App() {
                   <Input
                     type="date"
                     value={dateRange.endDate}
-                    onChange={(e) => setDateRange({ ...dateRange, endDate: e.target.value })}
+                    onChange={(e) =>
+                      setDateRange({
+                        ...dateRange,
+                        endDate: e.target.value,
+                      })
+                    }
                   />
                 </div>
               </div>
             )}
           </div>
-          
+
           <div className="flex gap-3 pt-2">
             <Button
               type="button"
@@ -1168,7 +1736,7 @@ export default function App() {
           </div>
         </form>
       </Modal>
-      
+
       <style>{`
         @keyframes fadeIn {
           from { opacity: 0; }
