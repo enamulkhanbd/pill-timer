@@ -3,6 +3,10 @@ import { supabase } from './supabase/client.tsx';
 
 const API_BASE_URL = `https://${projectId}.supabase.co/functions/v1/make-server-4b5dbeea`;
 
+// Use device-local date to avoid UTC day shifts
+const getLocalDateString = () =>
+  new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+
 // Helper to get auth header
 const getAuthHeader = async () => {
   try {
@@ -137,7 +141,7 @@ export const api = {
   // Logs
   async getTodayLogs(date?: string) {
     const headers = await getAuthHeader();
-    const queryDate = date || new Date().toISOString().split('T')[0];
+    const queryDate = date || getLocalDateString();
     const response = await fetch(`${API_BASE_URL}/logs/today?date=${queryDate}`, {
       headers,
     });
@@ -152,6 +156,7 @@ export const api = {
 
   async markAsTaken(medicationId: string, scheduledTime: string, markedBy?: string) {
     const headers = await getAuthHeader();
+    const date = getLocalDateString();
     const response = await fetch(`${API_BASE_URL}/logs`, {
       method: 'POST',
       headers,
@@ -159,12 +164,18 @@ export const api = {
         medication_id: medicationId,
         scheduled_time: scheduledTime,
         marked_by: markedBy,
+        date,
       }),
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to mark as taken');
+      let error: any = {};
+      try {
+        error = await response.json();
+      } catch (e) {
+        // ignore JSON parse errors
+      }
+      throw new Error(error.details || error.error || `Failed to mark as taken (status ${response.status})`);
     }
     
     return response.json();
@@ -172,15 +183,20 @@ export const api = {
 
   async unmarkAsTaken(medicationId: string, date?: string) {
     const headers = await getAuthHeader();
-    const queryDate = date || new Date().toISOString().split('T')[0];
+    const queryDate = date || getLocalDateString();
     const response = await fetch(`${API_BASE_URL}/logs/${medicationId}?date=${queryDate}`, {
       method: 'DELETE',
       headers,
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to unmark');
+      let error: any = {};
+      try {
+        error = await response.json();
+      } catch (e) {
+        // ignore JSON parse errors
+      }
+      throw new Error(error.details || error.error || `Failed to unmark (status ${response.status})`);
     }
     
     return response.json();
