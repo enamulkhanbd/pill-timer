@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Pill,
   Plus,
@@ -27,6 +27,7 @@ interface Medication {
   time: string;
   dosage?: string;
   taken: boolean;
+  takenAt?: string; // NEW: Timestamp when marked as taken
   daysNeeded?: number;
   startDate?: string;
   endDate?: string;
@@ -37,88 +38,6 @@ interface AppData {
   medications: Medication[];
   lastOpenedDate: string;
 }
-
-// Helper function to convert 24-hour time to 12-hour format (01 AM, 02 PM, etc.)
-const formatTime = (time24: string): string => {
-  if (!time24) return "";
-
-  const [hours, minutes] = time24.split(":").map(Number);
-  if (isNaN(hours) || isNaN(minutes)) return time24;
-
-  const period = hours >= 12 ? "PM" : "AM";
-  let hours12 = hours % 12;
-  if (hours12 === 0) hours12 = 12;
-  return `${hours12.toString().padStart(2, "0")} ${period}`;
-};
-
-const getGreeting = () => {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good Morning";
-  if (hour < 18) return "Good Afternoon";
-  return "Good Evening";
-};
-
-const getDaysRemaining = (med: Medication) => {
-  if (!med.daysNeeded || !med.startDate) return null;
-
-  const start = new Date(med.startDate);
-  const today = new Date();
-  const diffTime = Math.abs(today.getTime() - start.getTime());
-  const daysElapsed = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  const daysRemaining = med.daysNeeded - daysElapsed;
-
-  return {
-    daysElapsed,
-    daysRemaining: Math.max(0, daysRemaining),
-    daysNeeded: med.daysNeeded,
-    progress: Math.min(100, (daysElapsed / med.daysNeeded) * 100),
-    isComplete: daysRemaining <= 0,
-  };
-};
-
-const getLocalDateString = () =>
-  new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in device local time
-
-const isActiveOnDate = (med: Medication, date: Date) => {
-  if (!med.startDate || !med.endDate) return true;
-
-  const checkDate = new Date(date);
-  checkDate.setHours(0, 0, 0, 0);
-
-  const start = new Date(med.startDate);
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date(med.endDate);
-  end.setHours(0, 0, 0, 0);
-
-  return checkDate >= start && checkDate <= end;
-};
-
-const getMedicationsForDate = (
-  medications: Medication[],
-  date: Date,
-  showCompleted: boolean,
-  sortBy: "time" | "name" | "status",
-) => {
-  let filtered = medications.filter((m) => isActiveOnDate(m, date));
-
-  if (!showCompleted) {
-    filtered = filtered.filter((m) => !m.taken);
-  }
-
-  return filtered.sort((a, b) => {
-    if (sortBy === "time") {
-      return a.time.localeCompare(b.time);
-    }
-    if (sortBy === "name") {
-      return a.name.localeCompare(b.name);
-    }
-    if (sortBy === "status") {
-      return a.taken === b.taken ? 0 : a.taken ? 1 : -1;
-    }
-    return 0;
-  });
-};
 
 // Reusable UI Components (shadcn/ui inspired)
 const Button: React.FC<{
@@ -285,7 +204,45 @@ export default function App() {
     endDate: "",
   });
   const [loading, setLoading] = useState(false);
-  const loadInFlight = useRef(false);
+
+  // Helper function to convert 24-hour time to 12-hour format (01 AM, 02 PM, etc.)
+  const formatTime = (time24: string): string => {
+    if (!time24) return '';
+    
+    // Parse the time (expecting HH:MM format)
+    const [hours, minutes] = time24.split(':').map(Number);
+    
+    if (isNaN(hours)) return time24;
+    
+    // Determine AM/PM
+    const period = hours >= 12 ? 'PM' : 'AM';
+    
+    // Convert to 12-hour format
+    let hours12 = hours % 12;
+    if (hours12 === 0) hours12 = 12; // Handle midnight and noon
+    
+    // Format with leading zeros and colon, space before AM/PM
+    return `${hours12.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${period}`;
+  };
+
+  // Helper function to format the "taken at" timestamp
+  const formatTakenAt = (takenAt: string): string => {
+    if (!takenAt) return '';
+    
+    const date = new Date(takenAt);
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    
+    // Determine AM/PM
+    const period = hours >= 12 ? 'PM' : 'AM';
+    
+    // Convert to 12-hour format
+    let hours12 = hours % 12;
+    if (hours12 === 0) hours12 = 12;
+    
+    // Format with leading zeros
+    return `${hours12.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${period}`;
+  };
 
   // Check database setup on mount (before auth check)
   useEffect(() => {
@@ -595,10 +552,6 @@ export default function App() {
 
   // Load medications
   const loadMedications = async (userToLoad?: any) => {
-    if (loadInFlight.current) {
-      return;
-    }
-
     // Use passed user or current user state
     const currentUser = userToLoad || user;
 
@@ -618,13 +571,13 @@ export default function App() {
     }
 
     try {
-      loadInFlight.current = true;
       console.log(
         "🔄 Loading medications for user:",
         currentUser.id,
       );
       setLoading(true);
-      const result = await api.getMedications(getLocalDateString());
+      const today = new Date().toISOString().split("T")[0];
+      const result = await api.getMedications(today);
 
       console.log("📊 API Response:", result);
 
@@ -650,6 +603,7 @@ export default function App() {
             time: med.time || med.scheduled_time, // Support both field names
             dosage: med.dosage,
             taken: med.taken,
+            takenAt: med.takenAt || med.taken_at, // Backend returns takenAt in camelCase
             personName: med.person_name,
             daysNeeded: med.duration_days,
             startDate: med.start_date,
@@ -676,7 +630,6 @@ export default function App() {
       console.error("❌ Error loading medications:", error);
       toast.error("Failed to load medications");
     } finally {
-      loadInFlight.current = false;
       setLoading(false);
     }
   };
@@ -745,13 +698,11 @@ export default function App() {
       // Mode 1: User entered days - convert to date range
       if (durationMode === "days" && newMed.daysNeeded) {
         daysNeeded = parseInt(newMed.daysNeeded);
-        const todayLocal = getLocalDateString();
-        const start = new Date(`${todayLocal}T00:00:00`);
-        const end = new Date(
-          start.getTime() + daysNeeded * 24 * 60 * 60 * 1000,
-        );
-        startDate = start.toISOString();
-        endDate = end.toISOString();
+        startDate = new Date().toISOString();
+        endDate = new Date(
+          new Date().getTime() +
+            daysNeeded * 24 * 60 * 60 * 1000,
+        ).toISOString();
       }
       // Mode 2: User entered date range - convert to days
       else if (
@@ -759,8 +710,8 @@ export default function App() {
         dateRange.startDate &&
         dateRange.endDate
       ) {
-        const start = new Date(`${dateRange.startDate}T00:00:00`);
-        const end = new Date(`${dateRange.endDate}T00:00:00`);
+        const start = new Date(dateRange.startDate);
+        const end = new Date(dateRange.endDate);
         const diffTime = Math.abs(
           end.getTime() - start.getTime(),
         );
@@ -833,11 +784,10 @@ export default function App() {
       // Mode 1: User entered days - convert to date range
       if (durationMode === "days" && newMed.daysNeeded) {
         daysNeeded = parseInt(newMed.daysNeeded);
-        const todayLocal = getLocalDateString();
-        const start = new Date(`${todayLocal}T00:00:00`);
-        startDate = start.toISOString();
+        startDate = new Date().toISOString();
         endDate = new Date(
-          start.getTime() + daysNeeded * 24 * 60 * 60 * 1000,
+          new Date().getTime() +
+            daysNeeded * 24 * 60 * 60 * 1000,
         ).toISOString();
       }
       // Mode 2: User entered date range - convert to days
@@ -846,8 +796,8 @@ export default function App() {
         dateRange.startDate &&
         dateRange.endDate
       ) {
-        const start = new Date(`${dateRange.startDate}T00:00:00`);
-        const end = new Date(`${dateRange.endDate}T00:00:00`);
+        const start = new Date(dateRange.startDate);
+        const end = new Date(dateRange.endDate);
         const diffTime = Math.abs(
           end.getTime() - start.getTime(),
         );
@@ -973,10 +923,13 @@ export default function App() {
         );
         console.log("✅ Mark as taken result:", result);
 
+        // Capture the current timestamp
+        const takenAt = new Date().toISOString();
+
         // Update local state
         setMedications(
           medications.map((m) =>
-            m.id === id ? { ...m, taken: true } : m,
+            m.id === id ? { ...m, taken: true, takenAt } : m,
           ),
         );
 
@@ -987,10 +940,10 @@ export default function App() {
         const result = await api.unmarkAsTaken(id);
         console.log("✅ Unmark result:", result);
 
-        // Update local state
+        // Update local state (clear takenAt timestamp)
         setMedications(
           medications.map((m) =>
-            m.id === id ? { ...m, taken: false } : m,
+            m.id === id ? { ...m, taken: false, takenAt: undefined } : m,
           ),
         );
 
@@ -1025,13 +978,11 @@ export default function App() {
         person_name: med.personName,
         duration_days: med.daysNeeded,
         start_date: med.daysNeeded
-          ? new Date(`${getLocalDateString()}T00:00:00`).toISOString()
+          ? new Date().toISOString()
           : med.startDate,
         end_date: med.daysNeeded
           ? new Date(
-              new Date(
-                `${getLocalDateString()}T00:00:00`,
-              ).getTime() +
+              new Date().getTime() +
                 med.daysNeeded * 24 * 60 * 60 * 1000,
             ).toISOString()
           : med.endDate,
@@ -1062,50 +1013,114 @@ export default function App() {
     }
   };
 
-  // Get today's and tomorrow's medications
-  const today = useMemo(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }, []);
+  // Greeting based on time
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good Morning";
+    if (hour < 18) return "Good Afternoon";
+    return "Good Evening";
+  };
 
-  const tomorrow = useMemo(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() + 1);
-    return d;
-  }, []);
+  // Calculate progress
+  const takenCount = medications.filter((m) => m.taken).length;
+  const totalCount = medications.length;
+  const progress =
+    totalCount > 0 ? (takenCount / totalCount) * 100 : 0;
 
-  const { takenCount, totalCount, progress } = useMemo(() => {
-    const taken = medications.filter((m) => m.taken).length;
-    const total = medications.length;
+  // Helper function to calculate days remaining
+  const getDaysRemaining = (med: Medication) => {
+    if (!med.daysNeeded || !med.startDate) return null;
+
+    const start = new Date(med.startDate);
+    const today = new Date();
+    const diffTime = Math.abs(
+      today.getTime() - start.getTime(),
+    );
+    const daysElapsed = Math.ceil(
+      diffTime / (1000 * 60 * 60 * 24),
+    );
+    const daysRemaining = med.daysNeeded - daysElapsed;
+
     return {
-      takenCount: taken,
-      totalCount: total,
-      progress: total > 0 ? (taken / total) * 100 : 0,
+      daysElapsed,
+      daysRemaining: Math.max(0, daysRemaining),
+      daysNeeded: med.daysNeeded,
+      progress: Math.min(
+        100,
+        (daysElapsed / med.daysNeeded) * 100,
+      ),
+      isComplete: daysRemaining <= 0,
     };
-  }, [medications]);
+  };
 
-  const todaysMedications = useMemo(
-    () =>
-      getMedicationsForDate(
-        medications,
-        today,
-        showCompleted,
-        sortBy,
-      ),
-    [medications, showCompleted, sortBy, today],
-  );
-  const tomorrowsMedications = useMemo(
-    () =>
-      getMedicationsForDate(
-        medications,
-        tomorrow,
-        showCompleted,
-        sortBy,
-      ),
-    [medications, showCompleted, sortBy, tomorrow],
-  );
+  // Helper function to check if medication is active on a specific date
+  const isActiveOnDate = (med: Medication, date: Date) => {
+    // If no date range specified, medication is always active
+    if (!med.startDate || !med.endDate) return true;
+
+    const checkDate = new Date(date);
+    checkDate.setHours(0, 0, 0, 0);
+
+    const start = new Date(med.startDate);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(med.endDate);
+    end.setHours(0, 0, 0, 0);
+
+    // Check if the date is within the date range
+    return checkDate >= start && checkDate <= end;
+  };
+
+  // Get medications for a specific date
+  const getMedicationsForDate = (date: Date) => {
+    let filtered = medications.filter((m) =>
+      isActiveOnDate(m, date),
+    );
+
+    if (!showCompleted) {
+      filtered = filtered.filter((m) => !m.taken);
+    }
+
+    return filtered.sort((a, b) => {
+      if (sortBy === "time") {
+        // Smart chronological sorting: upcoming medications first
+        const now = new Date();
+        const currentHours = now.getHours();
+        const currentMinutes = now.getMinutes();
+        const currentTimeInMinutes = currentHours * 60 + currentMinutes;
+        
+        // Parse medication times (format: "HH:MM")
+        const [aHours, aMinutes] = a.time.split(':').map(Number);
+        const [bHours, bMinutes] = b.time.split(':').map(Number);
+        
+        const aTimeInMinutes = aHours * 60 + aMinutes;
+        const bTimeInMinutes = bHours * 60 + bMinutes;
+        
+        const aIsPast = aTimeInMinutes < currentTimeInMinutes;
+        const bIsPast = bTimeInMinutes < currentTimeInMinutes;
+        
+        // If one is past and one is upcoming, upcoming comes first
+        if (aIsPast && !bIsPast) return 1;  // a goes after b
+        if (!aIsPast && bIsPast) return -1; // a goes before b
+        
+        // Both are either past or upcoming - sort by time ascending
+        return aTimeInMinutes - bTimeInMinutes;
+      } else if (sortBy === "name") {
+        return a.name.localeCompare(b.name);
+      } else if (sortBy === "status") {
+        return a.taken === b.taken ? 0 : a.taken ? 1 : -1;
+      }
+      return 0;
+    });
+  };
+
+  // Get today's and tomorrow's medications
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const todaysMedications = getMedicationsForDate(today);
+  const tomorrowsMedications = getMedicationsForDate(tomorrow);
 
   // Show loading spinner
   if (authLoading || isDatabaseSetup === null) {
@@ -1452,6 +1467,11 @@ export default function App() {
                               <span className="flex items-center gap-1">
                                 🕐 {formatTime(med.time)}
                               </span>
+                              {med.taken && med.takenAt && (
+                                <span className="flex items-center gap-1 text-green-600">
+                                  ✓ Taken at {formatTakenAt(med.takenAt)}
+                                </span>
+                              )}
                             </div>
 
                             {/* Progress bar for duration */}

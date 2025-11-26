@@ -294,29 +294,16 @@ app.post("/make-server-4b5dbeea/logs", async (c) => {
     
     const log = await c.req.json();
     console.log('📝 Marking medication as taken:', { userId: user.id, log });
-
+    
     if (!log.medication_id || !log.scheduled_time) {
       console.error('❌ Missing required fields:', log);
       return c.json({ error: 'Medication ID and scheduled time are required' }, 400);
     }
-
-    // Validate optional date
-    let takenAt = new Date().toISOString();
-    if (log.date) {
-      const parsed = new Date(`${log.date}T00:00:00`);
-      if (isNaN(parsed.getTime())) {
-        console.error('❌ Invalid date provided:', log.date);
-        return c.json({ error: 'Invalid date format' }, 400);
-      }
-      takenAt = parsed.toISOString();
-    }
     
     const { data, error } = await db.addMedicationLog({
-      medication_id: log.medication_id,
-      scheduled_time: log.scheduled_time,
-      marked_by: log.marked_by,
+      ...log,
       user_id: user.id,
-      taken_at: takenAt,
+      taken_at: new Date().toISOString(),
     });
     
     if (error) {

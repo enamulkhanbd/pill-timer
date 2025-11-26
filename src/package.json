@@ -1,0 +1,53 @@
+{
+  "name": "pill-timer",
+  "version": "1.0.0",
+  "description": "A modern medication management Progressive Web App built with React and Tailwind CSS",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext js,jsx,ts,tsx"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "lucide-react": "latest",
+    "sonner": "^2.0.3",
+    "react-hook-form": "^7.55.0",
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "vite": "^4.4.0",
+    "tailwindcss": "^4.0.0",
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.24",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "medication",
+    "reminder",
+    "health",
+    "pwa",
+    "react",
+    "tailwind",
+    "pill-timer"
+  ],
+  "author": {
+    "name": "Enamul Khan",
+    "url": "https://github.com/enamulkhanbd"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/enamulkhanbd/pill-timer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/enamulkhanbd/pill-timer/issues"
+  },
+  "homepage": "https://github.com/enamulkhanbd/pill-timer#readme"
+}
